@@ -31,7 +31,7 @@ kiro-cli のセッション履歴を横断検索できるデスクトップア�
 
 **1. リリースページから `.deb` をダウンロード**
 
-[https://github.com/ywsrock/hi-kiro/releases/latest](https://github.com/ywsrock/hi-kiro/releases/latest)
+[https://github.com/wenshuai-yan-cg/hi-kiro/releases/latest](https://github.com/wenshuai-yan-cg/hi-kiro/releases/latest)
 
 `hi-kiro_0.1.0_amd64.deb` をダウンロードします。
 
