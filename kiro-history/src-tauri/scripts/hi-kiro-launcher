@@ -1,0 +1,3 @@
+#!/bin/sh
+# hi-kiro launcher — バックグラウンドで起動してターミナルを解放する
+exec nohup /usr/bin/hi-kiro-bin "$@" > /dev/null 2>&1 &

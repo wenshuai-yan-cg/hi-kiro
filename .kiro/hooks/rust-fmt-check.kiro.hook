@@ -1,0 +1,14 @@
+{
+  "name": "rust-fmt-check",
+  "version": "1.0.0",
+  "enabled": true,
+  "description": "Auto-format Rust files with cargo fmt when edited in hi-kiro",
+  "when": {
+    "type": "fileEdited",
+    "patterns": ["kiro-history/src-tauri/src/**/*.rs"]
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "A Rust source file in kiro-history/src-tauri/src/ was just edited. Run `cargo fmt` in the `kiro-history/src-tauri/` directory to auto-format it, then verify with `cargo fmt --check`. Report any remaining issues."
+  }
+}

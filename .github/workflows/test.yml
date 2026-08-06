@@ -1,0 +1,120 @@
+name: CI Tests
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+env:
+  # Versions to test against
+  NODE_VERSIONS: "['18', '20', '22']"
+
+jobs:
+  # ── Frontend Tests ────────────────────────────────────────────────────────────
+  test-frontend:
+    name: Frontend / Node ${{ matrix.node }} / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['20', '22']
+        os: [ubuntu-22.04, windows-latest]
+        # To add macOS: uncomment below
+        # os: [ubuntu-22.04, windows-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ matrix.node }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: kiro-history/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: kiro-history
+
+      - name: TypeScript type check
+        run: npm run build
+        working-directory: kiro-history
+
+      - name: Run frontend tests
+        run: npm test
+        working-directory: kiro-history
+
+  # ── Rust Tests ────────────────────────────────────────────────────────────────
+  test-rust:
+    name: Rust / ${{ matrix.channel }} / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest]
+        channel: [stable]
+        # To test beta/nightly: uncomment below
+        # channel: [stable, beta]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libgtk-3-dev \
+            libayatana-appindicator3-dev librsvg2-dev
+
+      - name: Setup Rust (${{ matrix.channel }})
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.channel }}
+          components: clippy, rustfmt
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: kiro-history/src-tauri
+          key: ${{ matrix.os }}-${{ matrix.channel }}
+
+      - name: Setup Node.js (for frontend dist)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: kiro-history/package-lock.json
+
+      - name: Build frontend (required by tauri::generate_context!)
+        run: npm ci && npm run build
+        working-directory: kiro-history
+
+      - name: Check formatting
+        run: cargo fmt --check
+        working-directory: kiro-history/src-tauri
+
+      - name: Clippy (lint)
+        run: cargo clippy -- -D warnings
+        working-directory: kiro-history/src-tauri
+
+      - name: Run tests
+        run: cargo test
+        working-directory: kiro-history/src-tauri
+
+  # ── Summary ───────────────────────────────────────────────────────────────────
+  ci-pass:
+    name: CI Pass
+    needs: [test-frontend, test-rust]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Check all jobs passed
+        run: |
+          if [[ "${{ needs.test-frontend.result }}" != "success" || \
+                "${{ needs.test-rust.result }}" != "success" ]]; then
+            echo "One or more CI jobs failed"
+            exit 1
+          fi
+          echo "All CI jobs passed!"

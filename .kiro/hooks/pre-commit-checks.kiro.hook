@@ -1,0 +1,15 @@
+{
+  "name": "pre-commit-checks",
+  "version": "1.0.0",
+  "enabled": true,
+  "description": "Run cargo fmt, clippy, and cargo test before committing Rust changes",
+  "when": {
+    "type": "userTriggered",
+    "triggerName": "pre-commit"
+  },
+  "then": {
+    "type": "runCommand",
+    "command": "cd kiro-history/src-tauri && cargo fmt --check && cargo clippy -- -D warnings && cargo test && echo '✅ All checks passed'",
+    "description": "cargo fmt + clippy + test"
+  }
+}

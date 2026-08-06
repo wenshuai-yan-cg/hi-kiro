@@ -1,0 +1,22 @@
+# Rust build artifacts
+kiro-history/src-tauri/target/
+
+# Node.js
+kiro-history/node_modules/
+kiro-history/dist/
+
+# Tauri build output
+kiro-history/src-tauri/gen/schemas/
+
+# Lock files (keep package-lock.json, Cargo.lock)
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.deb
+*.rpm
+*.AppImage
