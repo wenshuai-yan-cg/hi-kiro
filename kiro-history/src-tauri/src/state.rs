@@ -11,6 +11,10 @@ pub struct AppConfig {
     pub sessions_dir: Option<String>,
     pub sqlite_db_path: Option<String>,
     pub theme: Option<String>, // "system" | "dark" | "light"
+    /// クイックパレットのショートカットキー（例: "CommandOrControl+Shift+V"）
+    pub palette_shortcut_key: Option<String>,
+    /// ショートカットを有効にするか
+    pub palette_shortcut_enabled: Option<bool>,
 }
 
 impl Default for AppConfig {
@@ -19,6 +23,8 @@ impl Default for AppConfig {
             sessions_dir: None,
             sqlite_db_path: None,
             theme: Some("system".to_string()),
+            palette_shortcut_key: Some("CommandOrControl+Shift+V".to_string()),
+            palette_shortcut_enabled: Some(true),
         }
     }
 }
@@ -374,6 +380,8 @@ mod tests {
             sessions_dir: Some("/custom/sessions".to_string()),
             sqlite_db_path: Some("/custom/data.sqlite3".to_string()),
             theme: None,
+            palette_shortcut_key: None,
+            palette_shortcut_enabled: None,
         };
         let (sessions_dir, sqlite_db, _) = resolve_paths(&config);
         assert_eq!(sessions_dir.to_string_lossy(), "/custom/sessions");

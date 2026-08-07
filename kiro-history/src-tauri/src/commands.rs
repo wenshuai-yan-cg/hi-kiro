@@ -1022,6 +1022,12 @@ pub fn save_config_cmd(config: crate::state::AppConfig) -> Result<(), String> {
             .theme
             .or(existing.theme)
             .or(Some("system".to_string())),
+        palette_shortcut_key: config
+            .palette_shortcut_key
+            .or(existing.palette_shortcut_key),
+        palette_shortcut_enabled: config
+            .palette_shortcut_enabled
+            .or(existing.palette_shortcut_enabled),
     };
     crate::state::save_config(&merged).map_err(|e| e.to_string())
 }
@@ -1222,4 +1228,56 @@ pub fn set_snippet_collection(
     let s = state.lock().map_err(|e| e.to_string())?;
     crate::snippets::set_snippet_collection(&s.index_conn, &snippet_id, &collection_name)
         .map_err(|e| e.to_string())
+}
+
+// ── Quick Palette ─────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn quick_search_snippets(
+    query: String,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<Vec<crate::types::SavedSnippet>, String> {
+    let s = state.lock().map_err(|e| e.to_string())?;
+    crate::snippets::quick_search(&s.index_conn, &query, 10).map_err(|e| e.to_string())
+}
+
+// ── Cleanup Commands ──────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn find_duplicate_groups(
+    threshold: Option<f32>,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<Vec<crate::types::DuplicateGroup>, String> {
+    let s = state.lock().map_err(|e| e.to_string())?;
+    crate::snippets::find_duplicate_groups(&s.index_conn, threshold.unwrap_or(0.8))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn find_unused_snippets(
+    days: Option<i64>,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<Vec<crate::types::SavedSnippet>, String> {
+    let s = state.lock().map_err(|e| e.to_string())?;
+    crate::snippets::find_unused_snippets(&s.index_conn, days.unwrap_or(90))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn bulk_delete_snippets(
+    ids: Vec<String>,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<usize, String> {
+    let s = state.lock().map_err(|e| e.to_string())?;
+    crate::snippets::bulk_delete_snippets(&s.index_conn, &ids).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn merge_snippets(
+    keep_id: String,
+    drop_ids: Vec<String>,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<(), String> {
+    let s = state.lock().map_err(|e| e.to_string())?;
+    crate::snippets::merge_snippets(&s.index_conn, &keep_id, &drop_ids).map_err(|e| e.to_string())
 }

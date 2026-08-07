@@ -425,6 +425,7 @@ export function SettingsView() {
           <Power size={14} />
           アプリケーションを終了
         </button>
+
       </div>
     </div>
   );

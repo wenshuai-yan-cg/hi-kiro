@@ -5,7 +5,6 @@ import { SearchBar } from "../search/SearchBar";
 import { FilterBar } from "../search/FilterBar";
 import { SessionList } from "../session/SessionList";
 import { PreviewPane } from "../preview/PreviewPane";
-import { DeleteConfirmDialog } from "../session/DeleteConfirmDialog";
 import { useToast } from "../ui/Toast";
 import { api } from "../../api";
 import type { FilterParams, SessionSummary } from "../../types";
@@ -39,8 +38,6 @@ export function SearchView() {
     () => [...new Set(sessions.map((s) => s.model_name).filter(Boolean) as string[])],
     [sessions]
   );
-  const [deleteTargets, setDeleteTargets] = useState<SessionSummary[]>([]);
-
   const debouncedQuery = useDebounce(query, 150);
 
   const INITIAL_LIMIT = 100; // 初回は100件（500→100 に削減）
@@ -136,48 +133,10 @@ export function SearchView() {
     );
   };
 
-  const handleDelete = (id: string) => {
-    setSessions((prev) => prev.filter((s) => s.session_id !== id));
-    // Clear selection if deleted session was selected
-    if (selectedSessionId === id) {
-      setSelectedSessionId(null);
-    }
-  };
 
-  // Show confirm dialog for one or multiple sessions
-  const handleDeleteMultiple = (ids: string[]) => {
-    const targets = sessions.filter((s) => ids.includes(s.session_id));
-    setDeleteTargets(targets);
-  };
-
-  const confirmDelete = async () => {
-    const ids = deleteTargets.map((s) => s.session_id);
-    const result = await api.deleteSessionsFiles(ids);
-    // Remove successfully deleted from list
-    setSessions((prev) => prev.filter((s) => !result.deleted.includes(s.session_id)));
-    if (selectedSessionId && result.deleted.includes(selectedSessionId)) {
-      setSelectedSessionId(null);
-    }
-    // Show skipped info if any
-    if (result.skipped.length > 0) {
-      const msg = result.skipped
-        .map((sk) => `• ${sk.session_id.slice(0, 8)}… : ${sk.reason}`)
-        .join("\n");
-      toast.success(`削除完了: ${result.deleted.length}件`); if (result.skipped.length > 0) { const msg = result.skipped.map((sk: {session_id: string; reason: string}) => `${sk.session_id.slice(0,8)}: ${sk.reason}`).join(", "); toast.info(`スキップ: ${result.skipped.length}件 (${msg})`); }
-    }
-    setDeleteTargets([]);
-  };
 
   return (
-    <>
-      {deleteTargets.length > 0 && (
-        <DeleteConfirmDialog
-          sessions={deleteTargets}
-          onConfirm={confirmDelete}
-          onCancel={() => setDeleteTargets([])}
-        />
-      )}
-      <div className="flex flex-1 overflow-hidden">
+    <div className="flex flex-1 overflow-hidden">
         {/* Left pane */}
         <div
           className="flex flex-col"
@@ -195,8 +154,6 @@ export function SearchView() {
             selectedId={selectedSessionId}
             onSelect={setSelectedSessionId}
             onBookmarkToggle={handleBookmarkToggle}
-            onDelete={handleDelete}
-            onDeleteMultiple={handleDeleteMultiple}
             onRename={handleRename}
             loading={loading}
             onLoadMore={loadMore}
@@ -212,7 +169,6 @@ export function SearchView() {
             onRename={handleRename}
           />
         </div>
-      </div>
-    </>
+    </div>
   );
 }

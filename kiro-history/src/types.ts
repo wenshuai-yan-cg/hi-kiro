@@ -206,6 +206,7 @@ export interface SnippetSearchParams {
   tags?: string[];
   starred_only?: boolean;
   sort_by?: "recent" | "used" | "starred";
+  limit?: number;
 }
 
 export interface SimilarSnippet {
@@ -219,4 +220,10 @@ export interface SnippetStats {
   by_language: [string, number][];
   most_used: SavedSnippet[];
   recently_added: SavedSnippet[];
+}
+
+export interface DuplicateGroup {
+  keep_id: string;
+  snippet_ids: string[];
+  similarity: number;
 }

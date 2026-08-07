@@ -174,7 +174,8 @@ pub fn search_saved_snippets(
         _ => "ORDER BY updated_at DESC",
     };
 
-    let sql = format!("{}{} {} LIMIT 500", base, where_extra, order);
+    let limit = params_in.limit.unwrap_or(500);
+    let sql = format!("{}{} {} LIMIT {}", base, where_extra, order, limit);
     let mut stmt = conn.prepare(&sql)?;
 
     let rows = if use_fts {
@@ -253,7 +254,10 @@ fn normalize_code(code: &str) -> Vec<String> {
     code.lines()
         .map(|l| l.trim().to_lowercase())
         .filter(|l| {
-            !l.is_empty() && !l.starts_with("//") && !l.starts_with("#") && !l.starts_with("--")
+            !l.is_empty()
+                && !l.starts_with("//")
+                // markdown の見出し (#) は除外しない
+                && !l.starts_with("--")
         })
         .flat_map(|l| {
             l.split_whitespace()
@@ -1101,4 +1105,167 @@ def hello():
         let t = suggest_snippet_title("python", code);
         assert!(!t.starts_with("Translate"), "got: {}", t);
     }
+}
+
+// ── Quick Search (パレット用) ──────────────────────────────────────────────────
+
+/// 軽量ファジー検索。クエリ空なら最近使ったものを返す。
+pub fn quick_search(conn: &Connection, query: &str, limit: usize) -> Result<Vec<SavedSnippet>> {
+    let q = query.trim();
+    if q.is_empty() {
+        // 空クエリ: 最近使った or 最近保存したものを返す
+        let sql = format!(
+            "{} ORDER BY COALESCE(last_used_at, 0) DESC, updated_at DESC LIMIT ?1",
+            SELECT
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        return Ok(stmt
+            .query_map(params![limit as i64], row_to_snippet)?
+            .flatten()
+            .collect());
+    }
+    // FTS5 検索
+    let sql = format!(
+        "{} WHERE id IN (SELECT id FROM saved_snippets_fts WHERE saved_snippets_fts MATCH ?1) \
+         ORDER BY use_count DESC, updated_at DESC LIMIT ?2",
+        SELECT
+    );
+    let fts_query = q
+        .split_whitespace()
+        .map(|w| format!("{w}*"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut stmt = conn.prepare(&sql)?;
+    let result: Vec<SavedSnippet> = stmt
+        .query_map(params![fts_query, limit as i64], row_to_snippet)?
+        .flatten()
+        .collect();
+    Ok(result)
+}
+
+// ── Duplicate Detection ────────────────────────────────────────────────────────
+
+/// 全スニペット同士を言語内で総当たりし、threshold 以上の類似ペアをグループ化。
+pub fn find_duplicate_groups(
+    conn: &Connection,
+    threshold: f32,
+) -> Result<Vec<crate::types::DuplicateGroup>> {
+    use std::collections::{HashMap, HashSet};
+
+    let sql = format!("{} ORDER BY language, id", SELECT);
+    let mut stmt = conn.prepare(&sql)?;
+    let all: Vec<SavedSnippet> = stmt.query_map([], row_to_snippet)?.flatten().collect();
+
+    // 言語ごとに仕分け
+    let mut by_lang: HashMap<String, Vec<usize>> = HashMap::new();
+    for (i, s) in all.iter().enumerate() {
+        by_lang.entry(s.language.clone()).or_default().push(i);
+    }
+
+    let mut groups: Vec<crate::types::DuplicateGroup> = Vec::new();
+    let mut visited: HashSet<usize> = HashSet::new();
+
+    for indices in by_lang.values() {
+        for &i in indices {
+            if visited.contains(&i) {
+                continue;
+            }
+            let norm_i = normalize_code(&all[i].code);
+            let mut cluster_ids = vec![all[i].id.clone()];
+            let mut cluster_idx = vec![i];
+            for &j in indices {
+                if j == i || visited.contains(&j) {
+                    continue;
+                }
+                let norm_j = normalize_code(&all[j].code);
+                let sim = jaccard_similarity(&norm_i, &norm_j);
+                if sim >= threshold {
+                    cluster_ids.push(all[j].id.clone());
+                    cluster_idx.push(j);
+                }
+            }
+            if cluster_ids.len() > 1 {
+                for &k in &cluster_idx {
+                    visited.insert(k);
+                }
+                // 最も use_count が多いものを "keep_id" に
+                let keep_idx = cluster_idx
+                    .iter()
+                    .copied()
+                    .max_by_key(|&k| all[k].use_count)
+                    .unwrap_or(cluster_idx[0]);
+                groups.push(crate::types::DuplicateGroup {
+                    keep_id: all[keep_idx].id.clone(),
+                    snippet_ids: cluster_ids,
+                    similarity: {
+                        let n0 = normalize_code(&all[cluster_idx[0]].code);
+                        let n1 = normalize_code(&all[cluster_idx[1]].code);
+                        jaccard_similarity(&n0, &n1)
+                    },
+                });
+            }
+        }
+    }
+    Ok(groups)
+}
+
+/// 長期間 use_count = 0 のスニペットを返す（日数指定）。
+pub fn find_unused_snippets(conn: &Connection, days: i64) -> Result<Vec<SavedSnippet>> {
+    let cutoff_ms = chrono::Utc::now().timestamp_millis() - days * 86_400_000;
+    let sql = format!(
+        "{} WHERE use_count = 0 AND created_at < ?1 ORDER BY created_at ASC",
+        SELECT
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let result: Vec<SavedSnippet> = stmt
+        .query_map(params![cutoff_ms], row_to_snippet)?
+        .flatten()
+        .collect();
+    Ok(result)
+}
+
+/// 複数スニペットを一括削除。
+pub fn bulk_delete_snippets(conn: &Connection, ids: &[String]) -> Result<usize> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let placeholders = ids
+        .iter()
+        .enumerate()
+        .map(|(i, _)| format!("?{}", i + 1))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!("DELETE FROM saved_snippets WHERE id IN ({})", placeholders);
+    let mut stmt = conn.prepare(&sql)?;
+    let count = stmt.execute(rusqlite::params_from_iter(ids.iter()))?;
+    Ok(count)
+}
+
+/// スニペットを統合: keep_id 側に drop_ids のタグを合算し、drop_ids を削除。
+pub fn merge_snippets(conn: &Connection, keep_id: &str, drop_ids: &[String]) -> Result<()> {
+    // keep のタグ取得
+    let keep = get_snippet_by_id(conn, keep_id)?.ok_or(anyhow::anyhow!("not found"))?;
+    let mut merged_tags: Vec<String> = keep.tags.clone();
+
+    // drop 側のタグを合算（重複除去）
+    for drop_id in drop_ids {
+        if let Some(s) = get_snippet_by_id(conn, drop_id)? {
+            for t in s.tags {
+                if !merged_tags.contains(&t) {
+                    merged_tags.push(t);
+                }
+            }
+        }
+    }
+
+    // keep のタグを更新
+    let tags_json = serde_json::to_string(&merged_tags)?;
+    conn.execute(
+        "UPDATE saved_snippets SET tags = ?1 WHERE id = ?2",
+        params![tags_json, keep_id],
+    )?;
+
+    // drop_ids を削除
+    bulk_delete_snippets(conn, drop_ids)?;
+    Ok(())
 }

@@ -6,11 +6,13 @@ import { python } from "@codemirror/lang-python";
 import { rust } from "@codemirror/lang-rust";
 import { sql } from "@codemirror/lang-sql";
 import { json } from "@codemirror/lang-json";
-import { X, Copy, Check, Save, Edit, History, ExternalLink, Star, RotateCcw, Folder } from "lucide-react";
+import { markdown } from "@codemirror/lang-markdown";
+import { X, Copy, Check, Save, Edit, History, ExternalLink, Star, RotateCcw, Folder, Trash2 } from "lucide-react";
 import { api } from "../../api";
 import type { SnippetVersion, SnippetCollection } from "../../api";
 import type { SavedSnippet, CodeSnippetWithSession } from "../../types";
 import { useToast } from "../ui/Toast";
+import { ConfirmDialog } from "../ui/ModalShell";
 import { langColor } from "./SnippetCard";
 
 type PanelSnippet = SavedSnippet | CodeSnippetWithSession;
@@ -35,7 +37,9 @@ function getLang(language: string) {
     case "rust": return rust();
     case "sql": return sql();
     case "json": return json();
-    default: return javascript();
+    case "markdown": case "md": return markdown();
+    // "text" / 不明な言語はハイライトなし（大きなファイルでも安全）
+    default: return [];
   }
 }
 
@@ -48,6 +52,7 @@ export function SnippetDetailPanel({ snippet, onClose, onSave, onSaveNew, onOpen
   const [copied, setCopied] = useState(false);
   const [saving, setSaving] = useState(false);
   const [similar, setSimilar] = useState<Array<{ snippet: SavedSnippet; similarity: number }>>([]);
+  const [deleteTarget, setDeleteTarget] = useState<SavedSnippet | null>(null);
   const [versions, setVersions] = useState<SnippetVersion[]>([]);
   const [showHistory, setShowHistory] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -196,7 +201,7 @@ export function SnippetDetailPanel({ snippet, onClose, onSave, onSaveNew, onOpen
             value={editCode}
             height="100%"
             theme={oneDark}
-            extensions={[getLang(snippet.language)]}
+            extensions={(() => { const l = getLang(snippet.language); return Array.isArray(l) ? l : [l]; })()}
             onChange={setEditCode}
             style={{ height: "100%", fontSize: "12px", fontFamily: "'JetBrains Mono', monospace" }}
           />
@@ -205,7 +210,7 @@ export function SnippetDetailPanel({ snippet, onClose, onSave, onSaveNew, onOpen
             value={editCode}
             height="100%"
             theme={oneDark}
-            extensions={[getLang(snippet.language)]}
+            extensions={(() => { const l = getLang(snippet.language); return Array.isArray(l) ? l : [l]; })()}
             editable={false}
             style={{ height: "100%", fontSize: "12px", fontFamily: "'JetBrains Mono', monospace" }}
           />
@@ -229,14 +234,43 @@ export function SnippetDetailPanel({ snippet, onClose, onSave, onSaveNew, onOpen
           <p className="text-xs font-medium mb-1.5" style={{ color: "var(--text-muted)" }}>類似スニペット</p>
           <div className="space-y-1">
             {similar.slice(0, 3).map((s) => (
-              <div key={s.snippet.id} className="flex items-center gap-2 text-xs" style={{ color: "var(--text-secondary)" }}>
+              <div key={s.snippet.id} className="flex items-center gap-2 text-xs group/sim" style={{ color: "var(--text-secondary)" }}>
                 <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: langColor(s.snippet.language) }} />
                 <span className="truncate flex-1">{s.snippet.title}</span>
                 <span style={{ color: "var(--text-muted)" }}>{Math.round(s.similarity * 100)}%</span>
+                <button
+                  onClick={() => setDeleteTarget(s.snippet)}
+                  className="opacity-0 group-hover/sim:opacity-100 p-0.5 rounded cursor-pointer flex-shrink-0"
+                  style={{ color: "#ef4444" }}
+                  title="削除"
+                >
+                  <Trash2 size={11} />
+                </button>
               </div>
             ))}
           </div>
         </div>
+      )}
+
+      {/* 類似スニペット削除確認 */}
+      {deleteTarget && (
+        <ConfirmDialog
+          title="スニペットを削除"
+          message={`「${deleteTarget.title}」を削除しますか？この操作は元に戻せません。`}
+          confirmLabel="削除"
+          danger
+          onConfirm={async () => {
+            try {
+              await api.deleteSnippet(deleteTarget.id);
+              setSimilar((prev) => prev.filter((x) => x.snippet.id !== deleteTarget.id));
+              toast.success("削除しました");
+            } catch (e) {
+              toast.error(`削除失敗: ${e}`);
+            }
+            setDeleteTarget(null);
+          }}
+          onCancel={() => setDeleteTarget(null)}
+        />
       )}
 
       {/* ── Footer ── */}

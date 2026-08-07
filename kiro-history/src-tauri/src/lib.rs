@@ -70,8 +70,15 @@ pub fn run() {
 
             // ── System Tray ──────────────────────────────────────────────
             let show_item = MenuItem::with_id(app, "show", "ウィンドウを表示", true, None::<&str>)?;
+            let palette_item = MenuItem::with_id(
+                app,
+                "palette",
+                "スニペット検索 (パレット)",
+                true,
+                None::<&str>,
+            )?;
             let quit_item = MenuItem::with_id(app, "quit", "終了", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
+            let menu = Menu::with_items(app, &[&show_item, &palette_item, &quit_item])?;
 
             let icon = app.default_window_icon().cloned().unwrap_or_else(|| {
                 tauri::image::Image::from_bytes(include_bytes!("../icons/32x32.png"))
@@ -88,6 +95,17 @@ pub fn run() {
                         if let Some(w) = app.get_webview_window("main") {
                             let _ = w.show();
                             let _ = w.set_focus();
+                        }
+                    }
+                    "palette" => {
+                        if let Some(win) = app.get_webview_window("quick-palette") {
+                            if win.is_visible().unwrap_or(false) {
+                                let _ = win.hide();
+                            } else {
+                                let _ = win.center();
+                                let _ = win.show();
+                                let _ = win.set_focus();
+                            }
                         }
                     }
                     "quit" => app.exit(0),
@@ -211,6 +229,11 @@ pub fn run() {
             commands::delete_snippet_collection,
             commands::set_snippet_collection,
             commands::search_sessions_cursor,
+            commands::quick_search_snippets,
+            commands::find_duplicate_groups,
+            commands::find_unused_snippets,
+            commands::bulk_delete_snippets,
+            commands::merge_snippets,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

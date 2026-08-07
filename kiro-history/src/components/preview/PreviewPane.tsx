@@ -32,9 +32,10 @@ hljs.registerLanguage("html", xml);
 hljs.registerLanguage("xml", xml);
 hljs.registerLanguage("go", go);
 hljs.registerLanguage("java", java);
-import { Copy, Check, RotateCcw, Download, ChevronDown, ChevronRight, Tag, X, Pencil } from "lucide-react";
+import { Copy, Check, RotateCcw, Download, ChevronDown, ChevronRight, Tag, X, Pencil, Scissors } from "lucide-react";
 import { useToast } from "../ui/Toast";
 import type { SessionDetail, SessionSummary } from "../../types";
+import { SaveSnippetModal } from "../snippets/SnippetCard";
 import { api } from "../../api";
 
 interface PreviewPaneProps {
@@ -125,9 +126,11 @@ function CopyDropdown({ content }: { content: string }) {
 function VirtualMessageList({
   messages,
   scrollRef,
+  onSaveSnippet,
 }: {
   messages: Array<{ role: string; content: string }>;
   scrollRef: React.RefObject<HTMLDivElement | null>;
+  onSaveSnippet?: (code: string) => void;
 }) {
   const virtualizer = useVirtualizer({
     count: messages.length,
@@ -173,7 +176,7 @@ function VirtualMessageList({
                   transform: `translateY(${item.start}px)`,
                 }}
               >
-                <MessageBubble role={msg.role as "User" | "Kiro"} content={msg.content} />
+                <MessageBubble role={msg.role as "User" | "Kiro"} content={msg.content} onSaveSnippet={onSaveSnippet} />
               </div>
             );
           })}
@@ -183,7 +186,13 @@ function VirtualMessageList({
   );
 }
 
-function MessageBubble({ role, content }: { role: "User" | "Kiro"; content: string }) {
+function MessageBubble({
+  role, content, onSaveSnippet,
+}: {
+  role: "User" | "Kiro";
+  content: string;
+  onSaveSnippet?: (code: string) => void;
+}) {
   const [showCopy, setShowCopy] = useState(false);
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -273,6 +282,19 @@ function MessageBubble({ role, content }: { role: "User" | "Kiro"; content: stri
                   >
                     <button onClick={() => copyAs(true)} className="w-full text-left px-3 py-1.5 text-xs cursor-pointer" style={{ color: "var(--text-primary)" }}>Copy as Markdown</button>
                     <button onClick={() => copyAs(false)} className="w-full text-left px-3 py-1.5 text-xs cursor-pointer" style={{ color: "var(--text-primary)" }}>Copy as Plain Text</button>
+                    <div style={{ height: 1, background: "var(--border)", margin: "2px 8px" }} />
+                    <button
+                      onClick={() => {
+                        setOpen(false);
+                        // メッセージ全文をそのままスニペットとして保存（Copy と同じ範囲）
+                        onSaveSnippet?.(content);
+                      }}
+                      className="w-full text-left px-3 py-1.5 text-xs cursor-pointer flex items-center gap-2"
+                      style={{ color: "var(--accent)" }}
+                    >
+                      <Scissors size={11} />
+                      スニペットとして保存
+                    </button>
                   </div>
                 </>
               )}
@@ -512,6 +534,8 @@ export function PreviewPane({ sessionId, onSelectSession, onRename }: PreviewPan
   const [showRelated, setShowRelated] = useState(false);
   const [viewMode, setViewMode] = useState<"all" | "user" | "kiro">("all");
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  // スニペット保存モーダル（仮想化リスト外で管理して再マウント問題を回避）
+  const [snippetToSave, setSnippetToSave] = useState<string | null>(null);
 
   useEffect(() => {
     if (!sessionId) {
@@ -654,6 +678,7 @@ export function PreviewPane({ sessionId, onSelectSession, onRename }: PreviewPan
       <VirtualMessageList
         messages={filteredMessages}
         scrollRef={scrollRef}
+        onSaveSnippet={(code) => setSnippetToSave(code)}
       />
 
       {/* Related sessions */}
@@ -735,6 +760,18 @@ export function PreviewPane({ sessionId, onSelectSession, onRename }: PreviewPan
           <CopyDropdown content={fullText} />
         </div>
       </div>
+
+      {/* スニペット保存モーダル（仮想化リスト外でマウント） */}
+      {snippetToSave !== null && (
+        <SaveSnippetModal
+          code={snippetToSave}
+          language="markdown"
+          sessionId={detail?.summary.session_id}
+          sessionTitle={detail?.summary.title}
+          onClose={() => setSnippetToSave(null)}
+          onSaved={() => setSnippetToSave(null)}
+        />
+      )}
     </div>
   );
 }

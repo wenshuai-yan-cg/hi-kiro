@@ -1,6 +1,6 @@
 import { useRef, useCallback, useState, memo, useMemo } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { Star, Copy, Check, Trash2 } from "lucide-react";
+import { Star, Copy, Check } from "lucide-react";
 import { useToast } from "../ui/Toast";
 import type { SessionSummary } from "../../types";
 import { api } from "../../api";
@@ -12,8 +12,6 @@ interface SessionListProps {
   selectedId: string | null;
   onSelect: (id: string) => void;
   onBookmarkToggle?: (id: string, starred: boolean) => void;
-  onDelete?: (id: string) => void;
-  onDeleteMultiple?: (ids: string[]) => void;
   onRename?: (id: string, newTitle: string) => void;
   loading?: boolean;
 }
@@ -179,8 +177,6 @@ export function SessionList({
   selectedId,
   onSelect,
   onBookmarkToggle,
-  onDelete,
-  onDeleteMultiple,
   onRename,
   loading,
   onLoadMore,
@@ -204,15 +200,6 @@ export function SessionList({
       onBookmarkToggle?.(session.session_id, newVal);
     },
     [onBookmarkToggle]
-  );
-
-  const handleDelete = useCallback(
-    (e: React.MouseEvent, session: SessionSummary) => {
-      e.stopPropagation();
-      // SearchView の DeleteConfirmDialog が確認を担当するため直接渡す
-      onDeleteMultiple?.([session.session_id]);
-    },
-    [onDeleteMultiple]
   );
 
   // loadMore 重複発火防止: stateの非同期更新に依存しない即時ロック
@@ -321,20 +308,7 @@ export function SessionList({
             <span className="text-xs flex-1" style={{ color: "var(--text-muted)" }}>
               {checkedIds.size} 件選択中
             </span>
-            {checkedIds.size > 0 && (
-              <button
-                onClick={() => {
-                  // SearchView の DeleteConfirmDialog が確認を担当するため直接渡す
-                  onDeleteMultiple?.(Array.from(checkedIds));
-                  setCheckedIds(new Set());
-                  setSelectMode(false);
-                }}
-                className="text-xs px-2 py-1 rounded cursor-pointer font-medium"
-                style={{ background: "#EF4444", color: "#fff" }}
-              >
-                削除 ({checkedIds.size})
-              </button>
-            )}
+
             <button
               onClick={exitSelectMode}
               className="text-xs px-2 py-1 rounded cursor-pointer"
@@ -445,17 +419,7 @@ export function SessionList({
                         >
                           <Star size={13} fill={s.starred ? "currentColor" : "none"} />
                         </button>
-                        <button
-                          onClick={(e) => handleDelete(e, s)}
-                          className="cursor-pointer p-0.5 rounded"
-                          style={{ color: "var(--text-muted)" }}
-                          onMouseEnter={(e) => (e.currentTarget.style.color = "#EF4444")}
-                          onMouseLeave={(e) => (e.currentTarget.style.color = "var(--text-muted)")}
-                          aria-label="Delete session"
-                          title="削除"
-                        >
-                          <Trash2 size={13} />
-                        </button>
+
                       </div>
                     )}
                   </div>

@@ -24,11 +24,6 @@ export function BookmarksView() {
     }
   };
 
-  const handleDelete = (id: string) => {
-    setSessions((prev) => prev.filter((s) => s.session_id !== id));
-    if (selectedSessionId === id) setSelectedSessionId(null);
-  };
-
   return (
     <div className="flex flex-1 overflow-hidden">
       <div
@@ -49,7 +44,6 @@ export function BookmarksView() {
           selectedId={selectedSessionId}
           onSelect={setSelectedSessionId}
           onBookmarkToggle={handleBookmarkToggle}
-          onDelete={handleDelete}
           loading={loading}
         />
       </div>

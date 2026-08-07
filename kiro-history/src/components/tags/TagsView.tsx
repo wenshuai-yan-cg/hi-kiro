@@ -207,11 +207,6 @@ export function TagsView() {
     }
   };
 
-  const handleDeleteMultiple = (ids: string[]) => {
-    setSessions((prev) => prev.filter((s) => !ids.includes(s.session_id)));
-    if (selectedSessionId && ids.includes(selectedSessionId)) setSelectedSessionId(null);
-  };
-
   const smartTags = tags.filter((t) => t.is_smart);
   const manualTags = tags.filter((t) => !t.is_smart);
   const treeNodes = buildTree(manualTags);
@@ -423,7 +418,6 @@ export function TagsView() {
               sessions={sessions}
               selectedId={selectedSessionId}
               onSelect={setSelectedSessionId}
-              onDeleteMultiple={handleDeleteMultiple}
               loading={loading}
             />
           )}

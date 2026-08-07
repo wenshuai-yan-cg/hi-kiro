@@ -38,6 +38,7 @@ import type {
   SnippetSearchParams,
   SnippetStats,
   DiffResult,
+  DuplicateGroup,
   ExportFormat,
   FileRef,
   FilterParams,
@@ -183,8 +184,8 @@ export const api = {
 
   // ── Config / WSL Path Detection ─────────────────────────────────────────────
   getConfig: () =>
-    invoke<{ sessions_dir?: string; sqlite_db_path?: string; theme?: string }>("get_config"),
-  saveConfig: (config: { sessions_dir?: string; sqlite_db_path?: string; theme?: string }) =>
+    invoke<{ sessions_dir?: string; sqlite_db_path?: string; theme?: string; palette_shortcut_key?: string; palette_shortcut_enabled?: boolean }>("get_config"),
+  saveConfig: (config: { sessions_dir?: string; sqlite_db_path?: string; theme?: string; palette_shortcut_key?: string; palette_shortcut_enabled?: boolean }) =>
     invoke<void>("save_config_cmd", { config }),
   detectWslPaths: () =>
     invoke<{ sessions_dir?: string; sqlite_db_path?: string; distro?: string }>("detect_wsl_paths"),
@@ -237,4 +238,16 @@ export const api = {
 
   // ── ダイアログ ───────────────────────────────────────────────────────────────
   confirmDelete: (message: string) => confirm(message, { title: "削除の確認", kind: "warning" }),
+
+  // ── Quick Palette & Cleanup ─────────────────────────────────────────────────
+  quickSearchSnippets: (query: string) =>
+    invoke<SavedSnippet[]>("quick_search_snippets", { query }),
+  findDuplicateGroups: (threshold?: number) =>
+    invoke<DuplicateGroup[]>("find_duplicate_groups", { threshold }),
+  findUnusedSnippets: (days?: number) =>
+    invoke<SavedSnippet[]>("find_unused_snippets", { days }),
+  bulkDeleteSnippets: (ids: string[]) =>
+    invoke<number>("bulk_delete_snippets", { ids }),
+  mergeSnippets: (keepId: string, dropIds: string[]) =>
+    invoke<void>("merge_snippets", { keepId, dropIds }),
 };

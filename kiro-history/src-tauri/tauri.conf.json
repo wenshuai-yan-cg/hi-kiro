@@ -12,6 +12,7 @@
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "hi-kiro",
         "width": 1280,
         "height": 900,
@@ -19,6 +20,20 @@
         "minHeight": 600,
         "resizable": true,
         "decorations": true
+      },
+      {
+        "label": "quick-palette",
+        "title": "",
+        "width": 580,
+        "height": 400,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "center": true,
+        "visible": false,
+        "skipTaskbar": true,
+        "resizable": false,
+        "url": "/"
       }
     ],
     "security": {
