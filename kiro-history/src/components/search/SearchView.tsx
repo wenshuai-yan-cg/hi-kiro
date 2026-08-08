@@ -20,7 +20,7 @@ function useDebounce<T>(value: T, delay: number): T {
 }
 
 export function SearchView() {
-  const { selectedSessionId, setSelectedSessionId, setIndexing, setIndexProgress } = useApp();
+  const { selectedSessionId, setSelectedSessionId, setIndexing, setIndexProgress, activeView } = useApp();
   const toast = useToast();
   const [query, setQuery] = useState("");
   const [filters, setFilters] = useState<FilterParams>({});
@@ -95,6 +95,13 @@ export function SearchView() {
       setLoadingMore(false);
     }
   }, [debouncedQuery, filters, hasMore]);
+
+  // Searchタブを開いたときに差分インデックス更新
+  useEffect(() => {
+    if (activeView !== "search") return;
+    setIndexing(true);
+    api.rebuildIndex().catch(() => {}).finally(() => setIndexing(false));
+  }, [activeView]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     loadSessions();

@@ -423,10 +423,7 @@ pub fn restore_session(conn: &Connection, session_id: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn get_stats(
-    conn: &Connection,
-    prices: &crate::model_prices::ModelPricesConfig,
-) -> Result<StatsData> {
+pub fn get_stats(conn: &Connection, cost_cache: &crate::state::CostCache) -> Result<StatsData> {
     // ── Core ──────────────────────────────────────────────────────────────────
     let total_sessions: i64 =
         conn.query_row("SELECT COUNT(*) FROM sessions_meta", [], |r| r.get(0))?;
@@ -439,7 +436,7 @@ pub fn get_stats(
         )
         .unwrap_or(0);
 
-    // Sessions by model (with duration)
+    // Sessions by model (with duration) — インデックスDBから取得
     let mut stmt = conn.prepare(
         "SELECT COALESCE(model_name,'unknown') as mn, COUNT(*) as cnt,
                 COALESCE(SUM(total_duration_secs),0) as dur
@@ -450,41 +447,66 @@ pub fn get_stats(
         .flatten()
         .collect();
 
-    // Build cost breakdown per model
-    let cost_breakdown: Vec<crate::types::CostBreakdown> = sessions_by_model_raw
+    // ── kiro-usage 方式のコスト算出（インクリメンタルキャッシュ使用） ─────────
+    // 差分集計済みの cost_cache.model_costs をそのまま使う
+    let model_cost_map = &cost_cache.model_costs;
+
+    // ── cost_breakdown と sessions_by_model を cost_cache ベースで統一 ────────
+    //
+    // インデックスDB(sessions_meta)はJSONL形式セッションのmodel_nameが
+    // NULLになるケースがある（rts_model_state.model_info=nullのセッション）。
+    // cost_cache.model_costs はアーカイブ/ネイティブから実際のモデル名で集計済みなので
+    // こちらをセッション数・コスト両方の正として使う。
+    //
+    // インデックスDBからは duration のみ補完する。
+
+    // モデル名 → 合計 duration のマップをインデックスDBから作成
+    let duration_by_model: std::collections::HashMap<String, i64> = sessions_by_model_raw
         .iter()
-        .map(|(model, _cnt, _dur)| {
-            let (input_price, output_price, context_window) =
-                crate::model_prices::get_price(prices, model);
-            // Estimate: avg context 15%, 70% input / 30% output split
-            let avg_ctx_pct = 0.15f64;
-            let est_total_tokens = (avg_ctx_pct * context_window as f64) as i64 * _cnt;
-            let est_input = (est_total_tokens as f64 * 0.7) as i64;
-            let est_output = (est_total_tokens as f64 * 0.3) as i64;
-            let cost = (est_input as f64 / 1_000_000.0) * input_price
-                + (est_output as f64 / 1_000_000.0) * output_price;
-            crate::types::CostBreakdown {
-                model_name: model.clone(),
-                est_input_tokens: est_input,
-                est_output_tokens: est_output,
-                est_cost_usd: (cost * 100.0).round() / 100.0,
-            }
+        .map(|(mn, _, dur)| (mn.clone(), *dur))
+        .collect();
+
+    // cost_cache のモデル別データを基に cost_breakdown と sessions_by_model を構築
+    let mut combined: Vec<(String, &crate::cost_calc::ModelCostSummary, i64)> = model_cost_map
+        .iter()
+        .map(|(model, mc)| {
+            let dur = duration_by_model.get(model).copied().unwrap_or(0);
+            (model.clone(), mc, dur)
+        })
+        .collect();
+    // コスト降順でソート
+    combined.sort_by(|a, b| {
+        b.1.cost_usd
+            .partial_cmp(&a.1.cost_usd)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let cost_breakdown: Vec<crate::types::CostBreakdown> = combined
+        .iter()
+        .map(|(model, mc, _)| crate::types::CostBreakdown {
+            model_name: model.clone(),
+            cache_write_tokens: mc.cache_write,
+            cache_read_tokens: mc.cache_read,
+            output_tokens: mc.output,
+            est_cost_usd: mc.cost_usd,
+            est_input_tokens: mc.cache_write + mc.cache_read,
+            est_output_tokens: mc.output,
         })
         .collect();
 
-    let total_est_cost_usd = cost_breakdown.iter().map(|c| c.est_cost_usd).sum::<f64>();
-    let est_tokens_total = cost_breakdown
-        .iter()
-        .map(|c| c.est_input_tokens + c.est_output_tokens)
-        .sum::<i64>();
+    let total_est_cost_usd: f64 = model_cost_map.values().map(|mc| mc.cost_usd).sum();
+    let est_tokens_total: i64 = model_cost_map
+        .values()
+        .map(|mc| mc.cache_write + mc.cache_read + mc.output)
+        .sum();
 
-    let sessions_by_model: Vec<crate::types::ModelCount> = sessions_by_model_raw
+    // sessions_by_model: セッション数（会話数）を使用
+    let sessions_by_model: Vec<crate::types::ModelCount> = combined
         .iter()
-        .zip(cost_breakdown.iter())
-        .map(|((mn, cnt, dur), cb)| crate::types::ModelCount {
+        .map(|(mn, mc, dur)| crate::types::ModelCount {
             model_name: mn.clone(),
-            count: *cnt,
-            est_cost_usd: cb.est_cost_usd,
+            count: mc.session_count as i64,
+            est_cost_usd: mc.cost_usd,
             total_duration_secs: *dur,
         })
         .collect();
@@ -653,6 +675,28 @@ pub fn get_stats(
         cost_breakdown,
         total_est_cost_usd: (total_est_cost_usd * 100.0).round() / 100.0,
         est_tokens_total,
+        model_daily_costs: model_cost_map
+            .iter()
+            .map(|(model, mc)| {
+                let daily = mc
+                    .daily
+                    .iter()
+                    .map(|(date, de)| {
+                        (
+                            date.clone(),
+                            (
+                                de.cost_usd,
+                                de.session_count,
+                                de.cache_write,
+                                de.cache_read,
+                                de.output,
+                            ),
+                        )
+                    })
+                    .collect();
+                (model.clone(), daily)
+            })
+            .collect(),
     })
 }
 

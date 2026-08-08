@@ -1,5 +1,6 @@
 mod commands;
 mod constants;
+mod cost_calc;
 mod db;
 mod index;
 mod model_prices;
@@ -54,7 +55,8 @@ pub fn run() {
 
             // Load config and resolve paths
             let config = state::load_config();
-            let (sessions_dir, sqlite_db_path, index_db_path) = state::resolve_paths(&config);
+            let (sessions_dir, kiro_sessions_dir, sqlite_db_path, index_db_path) =
+                state::resolve_paths(&config);
 
             // Open index DB
             let conn = index::open_index_db(&index_db_path).expect("Failed to open index database");
@@ -63,6 +65,7 @@ pub fn run() {
                 conn,
                 index_db_path.clone(),
                 sessions_dir.clone(),
+                kiro_sessions_dir.clone(),
                 sqlite_db_path.clone(),
                 config,
             );
@@ -180,6 +183,8 @@ pub fn run() {
             commands::get_all_tags,
             commands::get_bookmarked_sessions,
             commands::get_stats,
+            commands::get_usage_json,
+            commands::save_usage_json,
             commands::get_snippets,
             commands::get_all_snippets,
             commands::get_file_refs,

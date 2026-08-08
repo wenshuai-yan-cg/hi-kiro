@@ -13,12 +13,31 @@ use std::path::PathBuf;
 pub struct ModelPriceEntry {
     /// マッチングパターン（モデル名に含まれる文字列）
     pub pattern: String,
-    /// 入力単価 $/1M tokens
+    /// 入力単価 $/1M tokens（キャッシュなし通常入力）
     pub input: f64,
     /// 出力単価 $/1M tokens
     pub output: f64,
     /// コンテキストウィンドウ（tokens）
     pub ctx: u64,
+    /// キャッシュ書き込み単価 $/1M tokens（Anthropic 5min cache write rate）
+    /// None の場合は input × 1.25 で自動計算
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_write: Option<f64>,
+    /// キャッシュ読み込み単価 $/1M tokens
+    /// None の場合は input × 0.10 で自動計算
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_read: Option<f64>,
+}
+
+impl ModelPriceEntry {
+    /// キャッシュ書き込み単価を返す。未設定なら input × 1.25
+    pub fn effective_cache_write(&self) -> f64 {
+        self.cache_write.unwrap_or(self.input * 1.25)
+    }
+    /// キャッシュ読み込み単価を返す。未設定なら input × 0.10
+    pub fn effective_cache_read(&self) -> f64 {
+        self.cache_read.unwrap_or(self.input * 0.10)
+    }
 }
 
 /// model_prices.json のルート構造
@@ -42,24 +61,34 @@ impl Default for ModelPricesConfig {
                     input: PRICE_FABLE_5_INPUT,
                     output: PRICE_FABLE_5_OUTPUT,
                     ctx: CTX_STANDARD,
+                    cache_write: None,
+                    cache_read: None,
                 },
                 ModelPriceEntry {
                     pattern: "opus-5".into(),
                     input: PRICE_OPUS_5_INPUT,
                     output: PRICE_OPUS_5_OUTPUT,
                     ctx: CTX_STANDARD,
+                    // Opus 5 ≒ Opus 4系と同等のキャッシュ価格
+                    cache_write: Some(CACHE_PRICE_OPUS_4_WRITE),
+                    cache_read: Some(CACHE_PRICE_OPUS_4_READ),
                 },
                 ModelPriceEntry {
                     pattern: "sonnet-5".into(),
                     input: PRICE_SONNET_5_INPUT,
                     output: PRICE_SONNET_5_OUTPUT,
                     ctx: CTX_STANDARD,
+                    // Sonnet 5 ≒ Sonnet 4系と同等のキャッシュ価格
+                    cache_write: Some(CACHE_PRICE_SONNET_4_WRITE),
+                    cache_read: Some(CACHE_PRICE_SONNET_4_READ),
                 },
                 ModelPriceEntry {
                     pattern: "haiku-4".into(),
                     input: PRICE_HAIKU_45_INPUT,
                     output: PRICE_HAIKU_45_OUTPUT,
                     ctx: CTX_STANDARD,
+                    cache_write: None,
+                    cache_read: None,
                 },
                 // Claude 4系レガシー
                 ModelPriceEntry {
@@ -67,18 +96,56 @@ impl Default for ModelPricesConfig {
                     input: PRICE_OPUS_41_INPUT,
                     output: PRICE_OPUS_41_OUTPUT,
                     ctx: CTX_STANDARD,
+                    cache_write: Some(CACHE_PRICE_OPUS_41_WRITE),
+                    cache_read: Some(CACHE_PRICE_OPUS_41_READ),
+                },
+                ModelPriceEntry {
+                    pattern: "opus-4.6".into(),
+                    input: PRICE_OPUS_4_INPUT,
+                    output: PRICE_OPUS_4_OUTPUT,
+                    ctx: CTX_STANDARD,
+                    cache_write: Some(CACHE_PRICE_OPUS_46_WRITE),
+                    cache_read: Some(CACHE_PRICE_OPUS_46_READ),
+                },
+                ModelPriceEntry {
+                    pattern: "opus-4.5".into(),
+                    input: PRICE_OPUS_4_INPUT,
+                    output: PRICE_OPUS_4_OUTPUT,
+                    ctx: CTX_STANDARD,
+                    cache_write: Some(CACHE_PRICE_OPUS_46_WRITE),
+                    cache_read: Some(CACHE_PRICE_OPUS_46_READ),
                 },
                 ModelPriceEntry {
                     pattern: "opus-4".into(),
                     input: PRICE_OPUS_4_INPUT,
                     output: PRICE_OPUS_4_OUTPUT,
                     ctx: CTX_STANDARD,
+                    cache_write: Some(CACHE_PRICE_OPUS_4_WRITE),
+                    cache_read: Some(CACHE_PRICE_OPUS_4_READ),
+                },
+                ModelPriceEntry {
+                    pattern: "sonnet-4.6".into(),
+                    input: PRICE_SONNET_4_INPUT,
+                    output: PRICE_SONNET_4_OUTPUT,
+                    ctx: CTX_STANDARD,
+                    cache_write: Some(CACHE_PRICE_SONNET_4_WRITE),
+                    cache_read: Some(CACHE_PRICE_SONNET_4_READ),
+                },
+                ModelPriceEntry {
+                    pattern: "sonnet-4.5".into(),
+                    input: PRICE_SONNET_4_INPUT,
+                    output: PRICE_SONNET_4_OUTPUT,
+                    ctx: CTX_STANDARD,
+                    cache_write: Some(CACHE_PRICE_SONNET_4_WRITE),
+                    cache_read: Some(CACHE_PRICE_SONNET_4_READ),
                 },
                 ModelPriceEntry {
                     pattern: "sonnet-4".into(),
                     input: PRICE_SONNET_4_INPUT,
                     output: PRICE_SONNET_4_OUTPUT,
                     ctx: CTX_STANDARD,
+                    cache_write: Some(CACHE_PRICE_SONNET_4_WRITE),
+                    cache_read: Some(CACHE_PRICE_SONNET_4_READ),
                 },
                 // Claude 3系レガシー
                 ModelPriceEntry {
@@ -86,18 +153,24 @@ impl Default for ModelPricesConfig {
                     input: PRICE_OPUS_3_INPUT,
                     output: PRICE_OPUS_3_OUTPUT,
                     ctx: CTX_STANDARD,
+                    cache_write: Some(CACHE_PRICE_OPUS_41_WRITE),
+                    cache_read: Some(CACHE_PRICE_OPUS_41_READ),
                 },
                 ModelPriceEntry {
                     pattern: "sonnet".into(),
                     input: PRICE_SONNET_3_INPUT,
                     output: PRICE_SONNET_3_OUTPUT,
                     ctx: CTX_STANDARD,
+                    cache_write: Some(CACHE_PRICE_SONNET_4_WRITE),
+                    cache_read: Some(CACHE_PRICE_SONNET_4_READ),
                 },
                 ModelPriceEntry {
                     pattern: "haiku".into(),
                     input: PRICE_HAIKU_3_INPUT,
                     output: PRICE_HAIKU_3_OUTPUT,
                     ctx: CTX_STANDARD,
+                    cache_write: None,
+                    cache_read: None,
                 },
             ],
         }
@@ -156,6 +229,7 @@ pub fn ensure_default_exists() {
 }
 
 /// モデル名から価格を返す (input $/MTok, output $/MTok, context_window)
+#[allow(dead_code)]
 pub fn get_price(config: &ModelPricesConfig, model: &str) -> (f64, f64, u64) {
     let m = model.to_lowercase();
     for entry in &config.models {
@@ -169,4 +243,33 @@ pub fn get_price(config: &ModelPricesConfig, model: &str) -> (f64, f64, u64) {
     }
     // フォールバック
     (3.0, 15.0, 200_000)
+}
+
+/// モデル名からキャッシュ対応価格を返す
+/// (cache_write $/MTok, cache_read $/MTok, output $/MTok)
+pub fn get_cache_price(config: &ModelPricesConfig, model: &str) -> (f64, f64, f64) {
+    let m = model.to_lowercase();
+    for entry in &config.models {
+        if m.contains(&entry.pattern.to_lowercase()) {
+            return (
+                entry.effective_cache_write(),
+                entry.effective_cache_read(),
+                entry.output,
+            );
+        }
+    }
+    // デフォルト: リストの最後のエントリを使用
+    if let Some(last) = config.models.last() {
+        return (
+            last.effective_cache_write(),
+            last.effective_cache_read(),
+            last.output,
+        );
+    }
+    // フォールバック (kiro-usageのDEFAULT_PRICINGと同等)
+    (
+        crate::constants::CACHE_PRICE_DEFAULT_WRITE,
+        crate::constants::CACHE_PRICE_DEFAULT_READ,
+        crate::constants::CACHE_PRICE_DEFAULT_OUTPUT,
+    )
 }

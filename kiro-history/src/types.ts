@@ -115,9 +115,13 @@ export interface WeekdayCount {
 
 export interface CostBreakdown {
   model_name: string;
+  cache_write_tokens: number;
+  cache_read_tokens: number;
+  output_tokens: number;
+  est_cost_usd: number;
+  // 後方互換フィールド
   est_input_tokens: number;
   est_output_tokens: number;
-  est_cost_usd: number;
 }
 
 export interface StatsData {
@@ -147,6 +151,8 @@ export interface StatsData {
   cost_breakdown: CostBreakdown[];
   total_est_cost_usd: number;
   est_tokens_total: number;
+  /** モデル別・日別コスト: model_name -> { "YYYY-MM-DD" -> [cost_usd, session_count, cache_write, cache_read, output] } */
+  model_daily_costs: Record<string, Record<string, [number, number, number, number, number]>>;
 }
 
 export interface CodeSnippet {

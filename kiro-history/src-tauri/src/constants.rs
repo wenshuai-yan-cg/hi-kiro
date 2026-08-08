@@ -133,3 +133,30 @@ pub const CTX_HAIKU: u64 = CTX_STANDARD;
 pub const PRICE_SONNET_INPUT: f64 = PRICE_SONNET_3_INPUT;
 pub const PRICE_SONNET_OUTPUT: f64 = PRICE_SONNET_3_OUTPUT;
 pub const CTX_SONNET: u64 = CTX_STANDARD;
+
+// ── Cache-aware pricing ($/MTok) — kiro-usageと同じ方式 ──────────────────────
+// Anthropic 5-min cache write rate: CacheWrite / CacheRead / Output
+// ref: kiro-usage __init__.py PRICING table
+pub const CACHE_PRICE_OPUS_46_WRITE: f64 = 6.25;
+pub const CACHE_PRICE_OPUS_46_READ: f64 = 0.50;
+pub const CACHE_PRICE_OPUS_46_OUTPUT: f64 = 25.0;
+
+pub const CACHE_PRICE_OPUS_41_WRITE: f64 = 18.75;
+pub const CACHE_PRICE_OPUS_41_READ: f64 = 1.50;
+pub const CACHE_PRICE_OPUS_41_OUTPUT: f64 = 75.0;
+
+pub const CACHE_PRICE_OPUS_4_WRITE: f64 = 18.75;
+pub const CACHE_PRICE_OPUS_4_READ: f64 = 1.50;
+pub const CACHE_PRICE_OPUS_4_OUTPUT: f64 = 75.0;
+
+pub const CACHE_PRICE_SONNET_4_WRITE: f64 = 3.75;
+pub const CACHE_PRICE_SONNET_4_READ: f64 = 0.30;
+pub const CACHE_PRICE_SONNET_4_OUTPUT: f64 = 15.0;
+
+/// Default pricing（kiro-usageのDEFAULT_PRICING = Opus）
+pub const CACHE_PRICE_DEFAULT_WRITE: f64 = 6.25;
+pub const CACHE_PRICE_DEFAULT_READ: f64 = 0.50;
+pub const CACHE_PRICE_DEFAULT_OUTPUT: f64 = 25.0;
+
+/// chars / tokensの変換比（kiro-usageと同じ 4 chars/token）
+pub const CHARS_PER_TOKEN: usize = 4;

@@ -9,6 +9,7 @@ import CalendarHeatmap from "react-calendar-heatmap";
 import "react-calendar-heatmap/dist/styles.css";
 import { api } from "../../api";
 import type { StatsData } from "../../types";
+import { useApp } from "../../context/AppContext";
 
 // ── Design tokens ──────────────────────────────────────────────────────────────
 const ACCENT = "#22C55E";
@@ -148,23 +149,34 @@ export function DashboardView() {
   const [stats, setStats] = useState<StatsData | null>(null);
   const [rebuilding, setRebuilding] = useState(false);
   const [calendarView, setCalendarView] = useState<CalendarView>("day");
-  const [durationView, setDurationView] = useState<"month" | "all">("all");
+  const [period, setPeriod] = useState<"month" | "all">("all");
+  const { activeView } = useApp();
 
   useEffect(() => {
+    if (activeView !== "dashboard") return;
     const run = async () => {
       // まず rebuild（index.db の書き込みロック）
       setRebuilding(true);
       try { await api.rebuildIndex(); } catch { /* ignore */ }
       setRebuilding(false);
-      // rebuild 完了後に stats を取得（read-only なのでロック競合なし）
+      // rebuild 完了後に stats を取得（コスト差分集計も内部で実行される）
       try { const s = await api.getStats(); setStats(s); } catch { /* ignore */ }
     };
-    // 画面遷移直後にすぐ古い stats を取得して先に表示
+    // タブ表示直後にキャッシュから即座に表示
     api.getStats().then(setStats).catch(() => {});
-    // 並列ではなく少し遅延させて getStats が先に完了してから rebuild 開始
+    // 少し遅延させて差分更新
     const timer = setTimeout(run, 200);
     return () => clearTimeout(timer);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [activeView]); // activeViewが"dashboard"になるたびに実行
+
+  // ダッシュボード表示中のポーリング（30秒ごとにコスト差分集計）
+  useEffect(() => {
+    if (activeView !== "dashboard") return;
+    const interval = setInterval(async () => {
+      try { const s = await api.getStats(); setStats(s); } catch { /* ignore */ }
+    }, 30_000);
+    return () => clearInterval(interval);
+  }, [activeView]);
 
   // 汎用週次集計（月曜始まり）
   function aggregateByWeek(daily: { date: string; value: number }[]) {
@@ -189,20 +201,6 @@ export function DashboardView() {
     return [...map.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([month, value]) => ({ month, value }));
   }
 
-  const sessionDailyBase = useMemo(
-    () => (stats?.sessions_by_date ?? []).map((d) => ({ date: d.date, value: d.count })),
-    [stats]
-  );
-  const weeklyData = useMemo(() => aggregateByWeek(sessionDailyBase), [sessionDailyBase]);
-  const monthlyData = useMemo(() => aggregateByMonth(sessionDailyBase), [sessionDailyBase]);
-
-  const durationDailyBase = useMemo(
-    () => (stats?.duration_by_date ?? []).map((d) => ({ date: d.date, value: d.duration_secs })),
-    [stats]
-  );
-  const durationWeekly = useMemo(() => aggregateByWeek(durationDailyBase), [durationDailyBase]);
-  const durationMonthly = useMemo(() => aggregateByMonth(durationDailyBase), [durationDailyBase]);
-
   // date → { count, duration_secs } のマップ（durationSummaryCard 用）
   const dailyStatsMap = useMemo(() => {
     const map = new Map<string, { count: number; duration_secs: number }>();
@@ -217,22 +215,18 @@ export function DashboardView() {
     return map;
   }, [stats]);
 
-  // 選択期間（今日/今週/今月/全期間）の作業時間サマリー
+  // 選択期間（今月/全期間）の集計値
   const durationPeriod = useMemo(() => {
-    // 全期間は stats の集計値をそのまま使う
-    if (durationView === "all") {
+    if (period === "all") {
       return {
         totalSecs: stats?.total_duration_secs ?? 0,
         avgSecs: stats?.avg_duration_secs ?? 0,
         hasData: (stats?.total_duration_secs ?? 0) > 0,
       };
     }
-
     const monthPrefix = toLocalDateStr(new Date()).slice(0, 7);
-
     let totalSecs = 0;
     let totalCount = 0;
-
     dailyStatsMap.forEach((v, date) => {
       if (date.startsWith(monthPrefix)) {
         totalSecs += v.duration_secs;
@@ -244,7 +238,121 @@ export function DashboardView() {
       avgSecs: totalCount > 0 ? totalSecs / totalCount : 0,
       hasData: totalCount > 0,
     };
-  }, [dailyStatsMap, durationView, stats]);
+  }, [dailyStatsMap, period, stats]);
+
+  // 月フィルタ適用後の全指標
+  const periodStats = useMemo(() => {
+    if (!stats) return null;
+    if (period === "all") return stats;
+
+    const monthPrefix = toLocalDateStr(new Date()).slice(0, 7);
+    const inMonth = (date: string) => date.startsWith(monthPrefix);
+
+    // 日別データを今月に絞り込み
+    const sessions_by_date = stats.sessions_by_date.filter(d => inMonth(d.date));
+    const duration_by_date = stats.duration_by_date.filter(d => inMonth(d.date));
+
+    // 集計
+    const total_sessions = sessions_by_date.reduce((s, d) => s + d.count, 0);
+    const total_duration_secs = duration_by_date.reduce((s, d) => s + d.duration_secs, 0);
+    const avg_duration_secs = total_sessions > 0 ? total_duration_secs / total_sessions : 0;
+
+    // モデル別・日別コストから今月分を正確に集計
+    const modelMonthlyCosts: Record<string, number> = {};
+    const modelMonthlySessionCounts: Record<string, number> = {};
+    const modelMonthlyCW: Record<string, number> = {};
+    const modelMonthlyCR: Record<string, number> = {};
+    const modelMonthlyOut: Record<string, number> = {};
+    for (const [model, dailyMap] of Object.entries(stats.model_daily_costs)) {
+      let costSum = 0, sessionSum = 0, cwSum = 0, crSum = 0, outSum = 0;
+      for (const [date, [cost, sc, cw, cr, out]] of Object.entries(dailyMap)) {
+        if (date.startsWith(monthPrefix)) {
+          costSum += cost; sessionSum += sc;
+          cwSum += cw; crSum += cr; outSum += out;
+        }
+      }
+      if (costSum > 0 || sessionSum > 0) {
+        modelMonthlyCosts[model] = costSum;
+        modelMonthlySessionCounts[model] = sessionSum;
+        modelMonthlyCW[model] = cwSum;
+        modelMonthlyCR[model] = crSum;
+        modelMonthlyOut[model] = outSum;
+      }
+    }
+    const total_est_cost_usd = Object.values(modelMonthlyCosts).reduce((s, v) => s + v, 0);
+    const total_monthly_sessions = Object.values(modelMonthlySessionCounts).reduce((s, v) => s + v, 0);
+
+    // cost_breakdown: 今月の実測値で再構築（コスト降順）
+    const cost_breakdown = stats.cost_breakdown
+      .map(cb => {
+        const cw = modelMonthlyCW[cb.model_name] ?? 0;
+        const cr = modelMonthlyCR[cb.model_name] ?? 0;
+        const out = modelMonthlyOut[cb.model_name] ?? 0;
+        return {
+          ...cb,
+          est_cost_usd: modelMonthlyCosts[cb.model_name] ?? 0,
+          cache_write_tokens: cw,
+          cache_read_tokens: cr,
+          output_tokens: out,
+          est_input_tokens: cw + cr,
+          est_output_tokens: out,
+        };
+      })
+      .filter(cb => cb.est_cost_usd > 0)
+      .sort((a, b) => b.est_cost_usd - a.est_cost_usd);
+
+    // sessions_by_model: 今月の日別セッション数から構築
+    const sessions_by_model = stats.sessions_by_model
+      .map(m => ({
+        ...m,
+        est_cost_usd: modelMonthlyCosts[m.model_name] ?? 0,
+        count: modelMonthlySessionCounts[m.model_name] ?? 0,
+      }))
+      .filter(m => m.count > 0 || m.est_cost_usd > 0)
+      .sort((a, b) => b.count - a.count);
+
+    const est_tokens_total = cost_breakdown.reduce(
+      (s, cb) => s + cb.est_input_tokens + cb.est_output_tokens, 0
+    );
+
+    const ratio = stats.total_sessions > 0 ? total_monthly_sessions / stats.total_sessions : 0;
+
+    return {
+      ...stats,
+      total_sessions,
+      total_duration_secs,
+      avg_duration_secs,
+      longest_session_duration: stats.longest_session_duration,
+      total_est_cost_usd,
+      est_tokens_total,
+      cost_breakdown,
+      sessions_by_model,
+      sessions_by_date,
+      duration_by_date,
+      total_messages: Math.round(stats.total_messages * ratio),
+      total_tool_uses: Math.round(stats.total_tool_uses * ratio),
+      total_cycles: Math.round(stats.total_cycles * ratio),
+      avg_messages_per_session: stats.avg_messages_per_session,
+      avg_tool_uses_per_session: stats.avg_tool_uses_per_session,
+      agent_session_ratio: stats.agent_session_ratio,
+      avg_context_pct: stats.avg_context_pct,
+    };
+  }, [stats, period]);
+
+  // periodStats ベースのグラフ用日別データ
+  const sessionDailyBase = useMemo(
+    () => (periodStats?.sessions_by_date ?? []).map((d) => ({ date: d.date, value: d.count })),
+    [periodStats]
+  );
+  const weeklyData = useMemo(() => aggregateByWeek(sessionDailyBase), [sessionDailyBase]);
+  const monthlyData = useMemo(() => aggregateByMonth(sessionDailyBase), [sessionDailyBase]);
+
+  const durationDailyBase = useMemo(
+    () => (periodStats?.duration_by_date ?? []).map((d) => ({ date: d.date, value: d.duration_secs })),
+    [periodStats]
+  );
+  const durationWeekly = useMemo(() => aggregateByWeek(durationDailyBase), [durationDailyBase]);
+  const durationMonthly = useMemo(() => aggregateByMonth(durationDailyBase), [durationDailyBase]);
 
   // 初回ロード中（stats がまだ null かつ rebuilding）だけ全画面スピナー
   if (!stats && rebuilding) {
@@ -264,7 +372,7 @@ export function DashboardView() {
   const startDate = new Date(endDate);
   startDate.setFullYear(startDate.getFullYear() - 1);
 
-  const heatmapValues = stats.sessions_by_date.map((d) => ({ date: d.date, count: d.count }));
+  const heatmapValues = (periodStats?.sessions_by_date ?? []).map((d) => ({ date: d.date, count: d.count }));
 
   // Fill weekday data (ensure all 7 days shown)
   const weekdayData = WEEKDAY_LABELS.map((label, i) => ({
@@ -278,48 +386,96 @@ export function DashboardView() {
     count: stats.by_hour.find((b) => b.hour === h)?.count ?? 0,
   }));
 
-  // Radar data for AI usage
-  const aiRadarData = [
-    { subject: "ツール使用", A: Math.min(stats.avg_tool_uses_per_session * 10, 100) },
-    { subject: "エージェント率", A: stats.agent_session_ratio * 100 },
-    { subject: "平均メッセージ", A: Math.min(stats.avg_messages_per_session * 3, 100) },
-    { subject: "コンテキスト使用", A: stats.avg_context_pct },
-    { subject: "セッション時間", A: Math.min(stats.avg_duration_secs / 3, 100) },
-  ];
-
-  const topProject = stats.sessions_by_cwd[0];
-
   return (
     <div className="flex-1 overflow-auto">
       <div className="p-6 space-y-8 max-w-7xl mx-auto">
 
         {/* ── Header ─────────────────────────────────────────────────────── */}
-        <div>
-          <h2 className="text-xl font-bold mb-1" style={{ fontFamily: "'JetBrains Mono', monospace", color: ACCENT }}>
-            Dashboard
-          </h2>
-          <p className="text-xs" style={{ color: "var(--text-muted)" }}>
-            kiro-cli 利用状況・コスト・生産性の分析
-          </p>
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h2 className="text-xl font-bold mb-1" style={{ fontFamily: "'JetBrains Mono', monospace", color: ACCENT }}>
+              Dashboard
+            </h2>
+            <p className="text-xs" style={{ color: "var(--text-muted)" }}>
+              kiro-cli 利用状況・コスト・生産性の分析
+            </p>
+          </div>
+          {/* グローバル期間切り替え */}
+          <div className="flex items-center gap-2 flex-shrink-0 mt-1">
+            <div className="flex gap-1">
+              {(["month", "all"] as const).map((v) => (
+                <button
+                  key={v}
+                  onClick={() => setPeriod(v)}
+                  className="px-3 py-1.5 rounded-lg cursor-pointer text-xs font-medium transition-colors"
+                  style={{
+                    background: period === v ? "var(--accent)" : "var(--surface)",
+                    color: period === v ? "#000" : "var(--text-muted)",
+                    border: `1px solid ${period === v ? "var(--accent)" : "var(--border)"}`,
+                  }}
+                >
+                  {v === "month" ? "今月" : "全期間"}
+                </button>
+              ))}
+            </div>
+            {/* kiro-usage互換JSONエクスポート */}
+            <button
+              onClick={async () => {
+                try {
+                  const { save } = await import("@tauri-apps/plugin-dialog");
+                  const date = new Date().toISOString().slice(0, 10);
+                  const outputPath = await save({
+                    defaultPath: `kiro-usage-${date}.json`,
+                    filters: [{ name: "JSON", extensions: ["json"] }],
+                  });
+                  if (!outputPath) return;
+                  await api.saveUsageJson(outputPath);
+                } catch (e) {
+                  console.error("Export failed:", e);
+                }
+              }}
+              className="px-3 py-1.5 rounded-lg cursor-pointer text-xs font-medium transition-colors"
+              style={{
+                background: "var(--surface)",
+                color: "var(--text-muted)",
+                border: "1px solid var(--border)",
+              }}
+              title="kiro-usage互換JSON をダウンロード"
+            >
+              ⬇ JSON
+            </button>
+          </div>
         </div>
 
         {/* ── Summary Cards ──────────────────────────────────────────────── */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          <SummaryCard label="総セッション数" value={String(stats.total_sessions)} sub={`総${stats.total_messages}メッセージ`} />
           <SummaryCard
-              label={durationView === "month" ? "今月の作業時間" : "総作業時間"}
-              value={rebuilding ? "計算中..." : durationPeriod.hasData ? fmtDuration(durationPeriod.totalSecs) : "データなし"}
-              sub={
-                rebuilding
-                  ? "インデックスを再構築中..."
-                  : durationPeriod.hasData
-                  ? `平均 ${fmtDuration(Math.round(durationPeriod.avgSecs))}/session`
-                  : "この期間の記録がありません"
-              }
-              headerExtra={<CompactViewTabs value={durationView} onChange={setDurationView} />}
-            />
-          <SummaryCard label="推定コスト" value={fmtCost(stats.total_est_cost_usd)} sub={`推定 ${fmtTokens(stats.est_tokens_total)} tokens`} accent />
-          <SummaryCard label="AIエージェント率" value={`${(stats.agent_session_ratio * 100).toFixed(0)}%`} sub={`ツール使用 ${stats.total_tool_uses}回 / ${stats.total_cycles}ループ`} />
+            label="総セッション数"
+            value={String(periodStats?.total_sessions ?? 0)}
+            sub={`総${periodStats?.total_messages ?? 0}メッセージ`}
+          />
+          <SummaryCard
+            label={period === "month" ? "今月の作業時間" : "総作業時間"}
+            value={rebuilding ? "計算中..." : durationPeriod.hasData ? fmtDuration(durationPeriod.totalSecs) : "データなし"}
+            sub={
+              rebuilding
+                ? "インデックスを再構築中..."
+                : durationPeriod.hasData
+                ? `平均 ${fmtDuration(Math.round(durationPeriod.avgSecs))}/session`
+                : "この期間の記録がありません"
+            }
+          />
+          <SummaryCard
+            label={period === "month" ? "今月の推定コスト" : "推定コスト"}
+            value={fmtCost(periodStats?.total_est_cost_usd ?? 0)}
+            sub={`推定 ${fmtTokens(periodStats?.est_tokens_total ?? 0)} tokens`}
+            accent
+          />
+          <SummaryCard
+            label="AIエージェント率"
+            value={`${((periodStats?.agent_session_ratio ?? 0) * 100).toFixed(0)}%`}
+            sub={`ツール使用 ${periodStats?.total_tool_uses ?? 0}回 / ${periodStats?.total_cycles ?? 0}ループ`}
+          />
         </div>
 
         {/* ── Cost Breakdown + Model Usage ───────────────────────────────── */}
@@ -327,15 +483,15 @@ export function DashboardView() {
           <Card>
             <SectionTitle>💰 モデル別コスト内訳（推定）</SectionTitle>
             <p className="text-xs mb-3" style={{ color: "var(--text-muted)" }}>
-              ※ context_usage%とモデル単価から算出した目安です
+              ※ kiro-usage互換の cache-aware pricing で算出した目安です
             </p>
-            {stats.cost_breakdown.length === 0 ? (
+            {(periodStats?.cost_breakdown.length ?? 0) === 0 ? (
               <p className="text-xs" style={{ color: "var(--text-muted)" }}>データなし</p>
             ) : (
               <div className="space-y-2">
-                {stats.cost_breakdown.map((cb, i) => {
-                  const pct = stats.total_est_cost_usd > 0
-                    ? (cb.est_cost_usd / stats.total_est_cost_usd) * 100
+                {(periodStats?.cost_breakdown ?? []).map((cb, i) => {
+                  const pct = (periodStats?.total_est_cost_usd ?? 0) > 0
+                    ? (cb.est_cost_usd / (periodStats?.total_est_cost_usd ?? 1)) * 100
                     : 0;
                   return (
                     <div key={i}>
@@ -357,7 +513,7 @@ export function DashboardView() {
                 })}
                 <div className="flex items-center justify-between pt-2 text-xs border-t" style={{ borderColor: "var(--border)", color: "var(--text-secondary)" }}>
                   <span>合計</span>
-                  <span className="font-mono font-bold" style={{ color: ACCENT }}>{fmtCost(stats.total_est_cost_usd)}</span>
+                  <span className="font-mono font-bold" style={{ color: ACCENT }}>{fmtCost(periodStats?.total_est_cost_usd ?? 0)}</span>
                 </div>
               </div>
             )}
@@ -367,9 +523,9 @@ export function DashboardView() {
             <SectionTitle>🤖 モデル別セッション数</SectionTitle>
             <ResponsiveContainer width="100%" height={200}>
               <PieChart>
-                <Pie data={stats.sessions_by_model} dataKey="count" nameKey="model_name"
+                <Pie data={periodStats?.sessions_by_model ?? []} dataKey="count" nameKey="model_name"
                   cx="50%" cy="50%" innerRadius={45} outerRadius={75}>
-                  {stats.sessions_by_model.map((_, idx) => (
+                  {(periodStats?.sessions_by_model ?? []).map((_, idx) => (
                     <Cell key={idx} fill={MODEL_COLORS[idx % MODEL_COLORS.length]} />
                   ))}
                 </Pie>
@@ -378,7 +534,7 @@ export function DashboardView() {
               </PieChart>
             </ResponsiveContainer>
             <div className="flex flex-wrap gap-2 mt-1">
-              {stats.sessions_by_model.map((m, i) => (
+              {(periodStats?.sessions_by_model ?? []).map((m, i) => (
                 <div key={i} className="flex items-center gap-1 text-xs">
                   <div className="w-2 h-2 rounded-full" style={{ background: MODEL_COLORS[i % MODEL_COLORS.length] }} />
                   <span style={{ color: "var(--text-muted)" }}>{m.model_name.replace("claude-", "")}</span>
@@ -394,10 +550,10 @@ export function DashboardView() {
             <SectionTitle>⏱ 生産性メトリクス</SectionTitle>
             <div className="space-y-3">
               {[
-                { label: "総作業時間", value: fmtDuration(stats.total_duration_secs) },
-                { label: "平均セッション時間", value: fmtDuration(Math.round(stats.avg_duration_secs)) },
+                { label: period === "month" ? "今月の作業時間" : "総作業時間", value: fmtDuration(periodStats?.total_duration_secs ?? 0) },
+                { label: "平均セッション時間", value: fmtDuration(Math.round(periodStats?.avg_duration_secs ?? 0)) },
                 { label: "最長セッション", value: fmtDuration(stats.longest_session_duration) },
-                { label: "平均メッセージ数/session", value: stats.avg_messages_per_session.toFixed(1) },
+                { label: "平均メッセージ数/session", value: (periodStats?.avg_messages_per_session ?? 0).toFixed(1) },
                 { label: "ピーク時間帯", value: `${stats.peak_hour}:00 〜 ${stats.peak_hour + 1}:00` },
               ].map(({ label, value }) => (
                 <div key={label} className="flex items-center justify-between">
@@ -449,7 +605,13 @@ export function DashboardView() {
             <SectionTitle>🧠 AI活用度スコア</SectionTitle>
             <div className="flex items-start gap-6">
               <ResponsiveContainer width="55%" height={200}>
-                <RadarChart data={aiRadarData} margin={{ top: 10, right: 10, bottom: 10, left: 10 }}>
+                <RadarChart data={[
+                  { subject: "ツール使用", A: Math.min((periodStats?.avg_tool_uses_per_session ?? 0) * 10, 100) },
+                  { subject: "エージェント率", A: (periodStats?.agent_session_ratio ?? 0) * 100 },
+                  { subject: "平均メッセージ", A: Math.min((periodStats?.avg_messages_per_session ?? 0) * 3, 100) },
+                  { subject: "コンテキスト使用", A: periodStats?.avg_context_pct ?? 0 },
+                  { subject: "セッション時間", A: Math.min((periodStats?.avg_duration_secs ?? 0) / 3, 100) },
+                ]} margin={{ top: 10, right: 10, bottom: 10, left: 10 }}>
                   <PolarGrid stroke="var(--border)" />
                   <PolarAngleAxis dataKey="subject" tick={{ fontSize: 10, fill: "var(--text-muted)" }} />
                   <Radar name="usage" dataKey="A" stroke={ACCENT} fill={ACCENT} fillOpacity={0.2} strokeWidth={2} />
@@ -457,10 +619,10 @@ export function DashboardView() {
               </ResponsiveContainer>
               <div className="flex-1 space-y-2 pt-4">
                 {[
-                  { label: "ツール使用/session", value: stats.avg_tool_uses_per_session.toFixed(1) },
-                  { label: "エージェントloop/session", value: (stats.total_cycles / Math.max(stats.total_sessions, 1)).toFixed(1) },
-                  { label: "エージェント活用率", value: `${(stats.agent_session_ratio * 100).toFixed(0)}%` },
-                  { label: "平均Context使用率", value: `${stats.avg_context_pct.toFixed(1)}%` },
+                  { label: "ツール使用/session", value: (periodStats?.avg_tool_uses_per_session ?? 0).toFixed(1) },
+                  { label: "エージェントloop/session", value: ((periodStats?.total_cycles ?? 0) / Math.max(periodStats?.total_sessions ?? 1, 1)).toFixed(1) },
+                  { label: "エージェント活用率", value: `${((periodStats?.agent_session_ratio ?? 0) * 100).toFixed(0)}%` },
+                  { label: "平均Context使用率", value: `${(periodStats?.avg_context_pct ?? 0).toFixed(1)}%` },
                 ].map(({ label, value }) => (
                   <div key={label} className="flex items-center justify-between">
                     <span className="text-xs" style={{ color: "var(--text-muted)" }}>{label}</span>
