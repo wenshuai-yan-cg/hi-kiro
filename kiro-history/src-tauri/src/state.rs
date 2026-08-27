@@ -439,8 +439,10 @@ pub fn list_wsl_distros() -> Vec<String> {
             // wsl --list は UTF-16LE で出力する
             let raw = out.stdout;
             let utf16: Vec<u16> = raw
-                .chunks_exact(2)
-                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|c| u16::from_le_bytes(*c))
                 .collect();
             let s = String::from_utf16_lossy(&utf16);
             return s
