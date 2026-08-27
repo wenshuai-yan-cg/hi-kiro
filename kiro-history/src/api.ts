@@ -82,6 +82,8 @@ export const api = {
   getBookmarkedSessions: () => invoke<SessionSummary[]>("get_bookmarked_sessions"),
 
   getStats: () => invoke<StatsData>("get_stats"),
+  getUsageJson: () => invoke<string>("get_usage_json"),
+  saveUsageJson: (outputPath: string) => invoke<void>("save_usage_json", { outputPath }),
 
   getSnippets: (sessionId: string) =>
     invoke<{ language: string; code: string }[]>("get_snippets", { sessionId }),

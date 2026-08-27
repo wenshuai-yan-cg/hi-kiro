@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
+import { listen } from "@tauri-apps/api/event";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
@@ -556,6 +557,18 @@ export function PreviewPane({ sessionId, onSelectSession, onRename }: PreviewPan
     });
     return () => { cancelled = true; };
   }, [sessionId]);
+
+  // インデックス更新完了時に現在表示中のセッションを再取得（最新メッセージを反映）
+  useEffect(() => {
+    const unsub = listen("index:done", () => {
+      if (!sessionId) return;
+      api.getSessionDetail(sessionId).then((d) => {
+        setDetail(d);
+        setTags(d.summary.tags);
+      }).catch(() => {});
+    });
+    return () => { unsub.then((fn) => fn()); };
+  }, [sessionId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Ctrl+R = Resume, Ctrl+Y = Copy
   useEffect(() => {

@@ -139,10 +139,23 @@ pub struct WeekdayCount {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CostBreakdown {
     pub model_name: String,
+    /// CacheWrite tokens (kiro-usage方式: 新規入力 chars/4)
+    pub cache_write_tokens: i64,
+    /// CacheRead tokens (kiro-usage方式: 累積コンテキスト)
+    pub cache_read_tokens: i64,
+    /// Output tokens (time_between_chunks の件数)
+    pub output_tokens: i64,
+    pub est_cost_usd: f64,
+    // 後方互換フィールド（フロントエンドが参照している場合のため保持）
     pub est_input_tokens: i64,
     pub est_output_tokens: i64,
-    pub est_cost_usd: f64,
 }
+
+/// モデル別・日別コスト型エイリアス
+pub type ModelDailyCosts = std::collections::HashMap<
+    String,
+    std::collections::HashMap<String, (f64, usize, i64, i64, i64)>,
+>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StatsData {
@@ -177,6 +190,8 @@ pub struct StatsData {
     pub cost_breakdown: Vec<CostBreakdown>,
     pub total_est_cost_usd: f64,
     pub est_tokens_total: i64,
+    /// モデル別・日別コスト: model_name → { "YYYY-MM-DD" → (cost_usd, session_count, cache_write, cache_read, output) }
+    pub model_daily_costs: ModelDailyCosts,
 }
 
 // ── Snippets ──────────────────────────────────────────────────────────────────

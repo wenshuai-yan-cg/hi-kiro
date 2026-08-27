@@ -12,6 +12,17 @@ use crate::types::*;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+/// ディレクトリ内のファイルの最新 mtime を返す。
+/// ディレクトリ自体の mtime は子ファイルの追加/削除時しか変わらないため、
+/// 既存ファイルの更新（.jsonl へのターン追加）を検知するために使用する。
+fn latest_file_mtime(dir: &std::path::Path) -> Option<std::time::SystemTime> {
+    let entries = std::fs::read_dir(dir).ok()?;
+    entries
+        .flatten()
+        .filter_map(|e| e.metadata().ok()?.modified().ok())
+        .max()
+}
+
 /// Load a full Session by ID (searches JSONL then SQLite sources).
 fn load_session_by_id(state: &AppState, session_id: &str) -> Option<Session> {
     let sessions_dir = state.sessions_dir.clone();
@@ -189,7 +200,7 @@ pub async fn rebuild_index(
         .map_err(|e| e.to_string())?;
 
     // スニペット・統計キャッシュを無効化（再構築後の再計算を保証）
-    if let Ok(guard) = state.lock() {
+    if let Ok(mut guard) = state.lock() {
         if let Ok(mut cache) = guard.snippets_cache.write() {
             cache.dir_mtime = None;
             cache.sessions.clear();
@@ -198,6 +209,8 @@ pub async fn rebuild_index(
             cache.last_indexed_at = None;
             cache.data = None;
         }
+        // セッション内容キャッシュもクリア（最新のメッセージを反映するため）
+        guard.session_cache.clear();
     }
 
     Ok(())
@@ -576,7 +589,7 @@ pub fn rename_session(
 pub fn get_stats(state: State<'_, Mutex<AppState>>) -> Result<StatsData, String> {
     let state_guard = state.lock().map_err(|e| e.to_string())?;
 
-    // インデックスの最終更新時刻を取得（変化がなければキャッシュを返す）
+    // インデックスの最終更新時刻を取得
     let current_indexed_at: Option<String> = state_guard
         .index_conn
         .query_row(
@@ -586,27 +599,184 @@ pub fn get_stats(state: State<'_, Mutex<AppState>>) -> Result<StatsData, String>
         )
         .ok();
 
-    // キャッシュヒット確認
+    // コストキャッシュが更新不要かチェック
+    let cli_db_path = state_guard.sqlite_db_path.clone();
+    let archive_dir = state_guard.kiro_sessions_dir.clone();
+    let native_dir = state_guard.sessions_dir.clone();
+    let archive_mtime = archive_dir.metadata().ok().and_then(|m| m.modified().ok());
+    // native_dir: ディレクトリ mtime ではなく内部ファイルの最新 mtime を使う
+    // （既存 .jsonl への追記はディレクトリ mtime を変えないため）
+    let native_mtime = latest_file_mtime(&native_dir);
+    let db_mtime = cli_db_path.metadata().ok().and_then(|m| m.modified().ok());
+
+    let cost_needs_update = {
+        let cc = state_guard.cost_cache.read().map_err(|e| e.to_string())?;
+        cc.needs_update(archive_mtime, native_mtime, db_mtime)
+    };
+
+    // インデックスもコストも変化なし → StatsCache をそのまま返す
     {
         let cache = state_guard.stats_cache.read().map_err(|e| e.to_string())?;
-        if cache.last_indexed_at.is_some() && cache.last_indexed_at == current_indexed_at {
+        if !cost_needs_update
+            && cache.last_indexed_at.is_some()
+            && cache.last_indexed_at == current_indexed_at
+        {
             if let Some(data) = &cache.data {
                 return Ok(data.clone());
             }
         }
     }
 
-    // キャッシュミス：フル計算
+    // 差分コスト集計（更新があったソースのみ処理）
     let prices = state_guard.model_prices.read().map_err(|e| e.to_string())?;
-    let fresh = db::get_stats(&state_guard.index_conn, &prices).map_err(|e| e.to_string())?;
+    {
+        let mut cost_cache = state_guard.cost_cache.write().map_err(|e| e.to_string())?;
+        let updated = crate::cost_calc::aggregate_cost_incremental(
+            &cli_db_path,
+            &native_dir,
+            &archive_dir,
+            &prices,
+            &mut cost_cache,
+        );
+        // 差分があった場合のみ永続化（index.db に保存）
+        if updated {
+            cost_cache.save_to_db(&state_guard.index_conn);
+        }
+    }
 
-    // キャッシュ更新
+    // インデックス DB の統計集計
+    let cost_cache = state_guard.cost_cache.read().map_err(|e| e.to_string())?;
+    let fresh = db::get_stats(&state_guard.index_conn, &cost_cache).map_err(|e| e.to_string())?;
+    drop(cost_cache);
+
+    // StatsCache 更新
     if let Ok(mut cache) = state_guard.stats_cache.write() {
         cache.last_indexed_at = current_indexed_at;
         cache.data = Some(fresh.clone());
     }
 
     Ok(fresh)
+}
+
+/// kiro-usage all --json と互換の JSON を生成して返す。
+#[tauri::command]
+pub fn get_usage_json(state: State<'_, Mutex<AppState>>) -> Result<String, String> {
+    let state_guard = state.lock().map_err(|e| e.to_string())?;
+
+    // cost_cache が空なら先に集計
+    let cli_db_path = state_guard.sqlite_db_path.clone();
+    let native_dir = state_guard.sessions_dir.clone();
+    let archive_dir = state_guard.kiro_sessions_dir.clone();
+    {
+        let prices = state_guard.model_prices.read().map_err(|e| e.to_string())?;
+        let mut cost_cache = state_guard.cost_cache.write().map_err(|e| e.to_string())?;
+        let updated = crate::cost_calc::aggregate_cost_incremental(
+            &cli_db_path,
+            &native_dir,
+            &archive_dir,
+            &prices,
+            &mut cost_cache,
+        );
+        if updated {
+            cost_cache.save_to_db(&state_guard.index_conn);
+        }
+    }
+
+    let cost_cache = state_guard.cost_cache.read().map_err(|e| e.to_string())?;
+    let model_costs = &cost_cache.model_costs;
+
+    // ── daily: 全モデル合算の日別集計 ──────────────────────────────────────
+    let mut daily_full: std::collections::HashMap<String, (i64, i64, i64, i64, f64)> =
+        std::collections::HashMap::new();
+    for mc in model_costs.values() {
+        for (date, de) in &mc.daily {
+            let e = daily_full.entry(date.clone()).or_insert((0, 0, 0, 0, 0.0));
+            e.0 += de.requests as i64;
+            e.1 += de.cache_write;
+            e.2 += de.cache_read;
+            e.3 += de.output;
+            e.4 += de.cost_usd;
+        }
+    }
+    let mut dates: Vec<String> = daily_full.keys().cloned().collect();
+    dates.sort_by(|a, b| b.cmp(a));
+    let mut daily_json = serde_json::Map::new();
+    for date in dates {
+        let (req, cw, cr, out, cost) = daily_full[&date];
+        daily_json.insert(
+            date,
+            serde_json::json!({
+                "requests": req,
+                "cache_write_est": cw,
+                "cache_read_est": cr,
+                "output_tokens": out,
+                "cost_est_usd": (cost * 10000.0).round() / 10000.0,
+            }),
+        );
+    }
+
+    // ── sessions: インデックスDBから基本情報を取得 ─────────────────────────
+    let mut sessions_json: Vec<serde_json::Value> = Vec::new();
+    if let Ok(mut stmt) = state_guard.index_conn.prepare(
+        "SELECT session_id, cwd, created_at, updated_at, model_name
+         FROM sessions_meta ORDER BY updated_at DESC",
+    ) {
+        let rows: Vec<(String, String, i64, i64, Option<String>)> = stmt
+            .query_map([], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            })
+            .map_err(|e| e.to_string())?
+            .flatten()
+            .collect();
+
+        for (session_id, cwd, created_at, updated_at, model_name) in rows {
+            let models: Vec<String> = model_name.map(|m| vec![m]).unwrap_or_default();
+            let created = chrono::DateTime::from_timestamp_millis(created_at)
+                .map(|dt| dt.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string())
+                .unwrap_or_default();
+            let updated = chrono::DateTime::from_timestamp_millis(updated_at)
+                .map(|dt| dt.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string())
+                .unwrap_or_default();
+            let id_short = session_id[..8.min(session_id.len())].to_string();
+            sessions_json.push(serde_json::json!({
+                "id": id_short,
+                "full_id": session_id,
+                "cwd": cwd,
+                "turns": 0,
+                "cache_write_est": 0,
+                "cache_read_est": 0,
+                "output_tokens": 0,
+                "cost_est_usd": 0.0,
+                "models": models,
+                "created": created,
+                "updated": updated,
+            }));
+        }
+    }
+
+    // ── combined_cost_est_usd ────────────────────────────────────────────────
+    let combined_cost: f64 = model_costs.values().map(|mc| mc.cost_usd).sum();
+
+    let output = serde_json::json!({
+        "cli": {
+            "daily": daily_json,
+            "sessions": sessions_json,
+        },
+        "combined_cost_est_usd": (combined_cost * 10000.0).round() / 10000.0,
+    });
+
+    serde_json::to_string_pretty(&output).map_err(|e| e.to_string())
+}
+
+/// get_usage_json で生成した JSON を指定パスに保存する。
+/// フロントで save ダイアログを開いてパスを取得してから呼び出す。
+#[tauri::command]
+pub fn save_usage_json(
+    output_path: String,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<(), String> {
+    let json = get_usage_json(state)?;
+    std::fs::write(&output_path, json).map_err(|e| e.to_string())
 }
 
 // ── Snippets ──────────────────────────────────────────────────────────────────
